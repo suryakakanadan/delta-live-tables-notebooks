@@ -1,14 +1,14 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC 
+# MAGIC
 # MAGIC # Data Producer 
-# MAGIC 
+# MAGIC
 # MAGIC The code below produces data using Python and saves files in JSON format to a cloud Kafka instance. In particular, there are 2 topics written to: i) `purchase_trends` and ii) `checking_account`. T
-# MAGIC 
+# MAGIC
 # MAGIC This producer mocks up 2 common data sources which an online bank or insurance provider might capture to understand customer's preferences. In reality, the data will most likely come from an OLTP database such as a MySQL or PostgreSQL database. There are common methods to extract such data including connectors such as Debezium, which pipe the data to Kafka topics. This data and schema represents this scenario. 
-# MAGIC 
+# MAGIC
 # MAGIC <img src='https://miro.medium.com/max/1089/1*a204V3tGkz696a1fjZTw_w.png'>
-# MAGIC 
+# MAGIC
 # MAGIC Docs: https://docs.databricks.com/spark/latest/structured-streaming/kafka.html#apache-kafka
 
 # COMMAND ----------
@@ -23,11 +23,11 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 
+# MAGIC
 # MAGIC ### The code below creates a shell Debezium record which is parametrized so we can create new records
-# MAGIC 
+# MAGIC
 # MAGIC <p></p>
-# MAGIC 
+# MAGIC
 # MAGIC * Create template record with customer attributes paramterized
 # MAGIC * Create 200 JSON files, one per time event with new buying patterns changing over time
 # MAGIC * Create ending point - purchase of a mortgage
@@ -297,21 +297,13 @@ for i in range(1, 200):
 
 # COMMAND ----------
 
-# You can connect to Kafka over either SSL/TLS encrypted connection, or with an unencrypted plaintext connection.
-# Just choose the set of corresponding endpoints to use.
-# If you chose the tls servers, you must enable SSL in the Kafka connection, see later for an example.
-kafka_bootstrap_servers_tls       = dbutils.secrets.get( "oetrta", "kafka-bootstrap-servers-tls"       )
-kafka_bootstrap_servers_plaintext = dbutils.secrets.get( "oetrta", "kafka-bootstrap-servers-plaintext" )
-
-# COMMAND ----------
-
 # DBTITLE 1,Create your a Kafka topic unique to your name
 # DBFS directory for this project, we will store the Kafka checkpoint in there
 project_dir = "/home/fs_cdc/"
 
 checkpoint_location = f"{project_dir}/patterns"
 
-topic = "purchase_trends"
+
 
 # COMMAND ----------
 
@@ -343,34 +335,121 @@ display(input_stream)
 
 # COMMAND ----------
 
-kafka_bootstrap_servers_tls = dbutils.secrets.get(scope="oetrta", key="rp_kafka_brokers")
+# MAGIC %md
+# MAGIC ## load secrets
 
 # COMMAND ----------
 
-# DBTITLE 1,WriteStream to Kafka
+# from databricks.sdk import WorkspaceClient
+
+# # Initialize the WorkspaceClient
+# w = WorkspaceClient()
+
+# # Create a secret scope
+# w.secrets.create_scope(scope="kafka-secrets")
+
+# COMMAND ----------
+
+# # Add Kafka username to the secret scope
+# w.secrets.put_secret(scope="kafka-secrets", key="kafka-username", string_value="xxxx")
+
+# # Add Kafka password to the secret scope
+# w.secrets.put_secret(scope="kafka-secrets", key="kafka-password", string_value="xxxxxxx")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## write to kafka
+
+# COMMAND ----------
+
+from pyspark.sql.functions import col, to_json, struct
+
 # Clear checkpoint location
 dbutils.fs.rm(checkpoint_location, True)
 
-# For the sake of an example, we will write to the Kafka servers using SSL/TLS encryption
-# Hence, we have to set the kafka.security.protocol property to "SSL"
+topic = "purchase_trends"
+
+# Kafka configuration
+kafka_bootstrap_servers_tls = "pkc-ldvj1.ap-southeast-2.aws.confluent.cloud:9092"
+kafka_security_protocol = "SASL_SSL"
+kafka_sasl_mechanism = "PLAIN"
+kafka_username = dbutils.secrets.get(scope="kafka-secrets", key="kafka-username")
+kafka_password = dbutils.secrets.get(scope="kafka-secrets", key="kafka-password")
+kafka_sasl_jaas_config=f'kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule required username="{kafka_username}" password="{kafka_password}";'
+
+# Write to Kafka
 (input_stream
-   .select(col("eventId").alias("key"), to_json(struct(col('payload'), col('schema'), col('processingTime'))).alias("value"))
+   .select(
+       col("eventId").alias("key"),
+       to_json(struct(col('payload'), col('schema'), col('processingTime'))).alias("value")
+   )
    .writeStream
    .format("kafka")
-   .option("kafka.bootstrap.servers", kafka_bootstrap_servers_tls )
-   .option("kafka.security.protocol", "SSL") 
-   .option("checkpointLocation", checkpoint_location )
+   .option("kafka.bootstrap.servers", kafka_bootstrap_servers_tls)
+   .option("kafka.security.protocol", kafka_security_protocol)
+   .option("kafka.sasl.mechanism", kafka_sasl_mechanism)
+   .option("kafka.sasl.jaas.config", kafka_sasl_jaas_config)
+   .option("checkpointLocation", checkpoint_location)
    .option("topic", topic)
+   .trigger(availableNow=True)
    .start()
 )
 
 # COMMAND ----------
 
-# MAGIC %sql drop table if exists customer_patterns_bronze
+# MAGIC %md
+# MAGIC ## check kafka connection & topic availability (if needed for debussing)
 
 # COMMAND ----------
 
-# MAGIC %sql drop table if exists checking_account
+
+# import socket
+
+# kafka_broker = "pkc-ldvj1.ap-southeast-2.aws.confluent.cloud"
+# port = 9092
+
+# try:
+#     socket.create_connection((kafka_broker, port), timeout=10)
+#     print("Connection successful")
+# except Exception as e:
+#     print(f"Connection failed: {e}")
+
+# COMMAND ----------
+
+# from confluent_kafka.admin import AdminClient, NewTopic
+
+# # Kafka configuration
+# kafka_bootstrap_servers = "pkc-ldvj1.ap-southeast-2.aws.confluent.cloud:9092"
+
+# # Create an AdminClient
+# admin_client = AdminClient({'bootstrap.servers': kafka_bootstrap_servers, 'security.protocol': 'SASL_SSL', 'sasl.mechanisms': 'PLAIN', 'sasl.username': 'Y7Z52NGBX33BQ46Z', 'sasl.password': 'IAGqFqzdTZGO6CXhHfSYSB2Obnxjf/p6pSRzT6FafqLkTAWYD2Pjc8VVSY01rEG3'})
+
+# # List of topics to check
+# topics = ["purchase_trends"]
+
+# # Check if topics exist
+# topic_metadata = admin_client.list_topics(timeout=10)
+# available_topics = topic_metadata.topics.keys()
+
+# for topic in topics:
+#     if topic in available_topics:
+#         print(f"Topic '{topic}' is available.")
+#     else:
+#         print(f"Topic '{topic}' is not available.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## back to business
+
+# COMMAND ----------
+
+# %sql drop table if exists customer_patterns_bronze
+
+# COMMAND ----------
+
+# %sql drop table if exists checking_account
 
 # COMMAND ----------
 
@@ -402,7 +481,7 @@ df.write.mode('overwrite').option("overwriteSchema", "true").saveAsTable("bankin
 # COMMAND ----------
 
 # Clear checkpoint location
-credit_payment_cp = "/home/fs/credit_payment_cp2/"
+credit_payment_cp = "/home/fs/credit_payment_cp3/"
 dbutils.fs.rm(credit_payment_cp, True)
 
 # COMMAND ----------
@@ -413,9 +492,22 @@ dbutils.fs.rm(credit_payment_cp, True)
    .select(uuidUdf().alias("key"), to_json(struct(col('customer_id'), col('scheduled_payment'), col('txn_amount'), col('debit_or_credit'), col('updt_ts'), col('initial_balance'))).alias("value"))
    .writeStream
    .format("kafka")
-   .option("kafka.bootstrap.servers", kafka_bootstrap_servers_tls )
-   .option("kafka.security.protocol", "SSL") 
+   .option("kafka.bootstrap.servers", kafka_bootstrap_servers_tls)
+   .option("kafka.security.protocol", kafka_security_protocol)
+   .option("kafka.sasl.mechanism", kafka_sasl_mechanism)
+   .option("kafka.sasl.jaas.config", kafka_sasl_jaas_config)
    .option("checkpointLocation", credit_payment_cp )
    .option("topic", "checking_acct")
+   .trigger(availableNow=True)
    .start()
 )
+
+# COMMAND ----------
+
+# tables = spark.sql("SHOW TABLES IN analytics1.banking").select("tableName").collect()
+# for table in tables:
+#     spark.sql(f"DROP TABLE analytics1.banking.{table['tableName']}")
+
+# COMMAND ----------
+
+
